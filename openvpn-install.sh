@@ -93,10 +93,11 @@ function checkOS() {
 }
 
 function initialCheck() {
-	if ! isRoot; then
-		echo "Sorry, you need to run this as root"
-		exit 1
-	fi
+	SHELL_PWD=$(dirname "${BASH_SOURCE[0]}")
+	# if ! isRoot; then
+	# 	echo "Sorry, you need to run this as root"
+	# 	exit 1
+	# fi
 	if ! tunAvailable; then
 		echo "TUN is not available"
 		exit 1
@@ -1093,22 +1094,12 @@ function newClient() {
 		echo "Client $CLIENT added."
 	fi
 
-	# Home directory of the user, where the client configuration will be written
-	if [ -e "/home/${CLIENT}" ]; then
-		# if $1 is a user name
-		homeDir="/home/${CLIENT}"
-	elif [ "${SUDO_USER}" ]; then
-		# if not, use SUDO_USER
-		if [ "${SUDO_USER}" == "root" ]; then
-			# If running sudo as root
-			homeDir="/root"
-		else
-			homeDir="/home/${SUDO_USER}"
-		fi
-	else
-		# if not SUDO_USER, use /root
-		homeDir="/root"
+	# 判断 脚本同路径下有没有 `openvpn_client` 文件夹，没有则创建
+	if [ ! -e ${SHELL_PWD}/openvpn_client ]; then
+		mkdir -p ${SHELL_PWD}/openvpn_client
 	fi
+	# 将创建的文件夹作为 `homeDir` 目录，存储生成的客户端配置文件
+	homeDir=${SHELL_PWD}/openvpn_client
 
 	# Determine if we use tls-auth or tls-crypt
 	if grep -qs "^tls-crypt" /etc/openvpn/server.conf; then
