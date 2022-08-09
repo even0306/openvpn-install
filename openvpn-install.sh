@@ -960,6 +960,7 @@ verb 3" >>/etc/openvpn/server.conf
 
 	# Add iptables rules in two scripts
 	mkdir -p /etc/iptables
+	mkdir -p /etc/iptables/rules.d
 
 	# Script to add rules
 	echo "#!/bin/sh
@@ -967,14 +968,20 @@ iptables -t nat -I POSTROUTING 1 -s 10.8.0.0/24 -o $NIC -j MASQUERADE
 iptables -I INPUT 1 -i tun0 -j ACCEPT
 iptables -I FORWARD 1 -i $NIC -o tun0 -j ACCEPT
 iptables -I FORWARD 1 -i tun0 -o $NIC -j ACCEPT
-iptables -I INPUT 1 -i $NIC -p $PROTOCOL --dport $PORT -j ACCEPT" >/etc/iptables/add-openvpn-rules.sh
+iptables -I INPUT 1 -i $NIC -p $PROTOCOL --dport $PORT -j ACCEPT
+iptables -N OPENVPN
+iptables -I INPUT 1 -j OPENVPN
+/etc/iptables/rules.d/*.sh start" >/etc/iptables/add-openvpn-rules.sh
 
 	if [[ $IPV6_SUPPORT == 'y' ]]; then
 		echo "ip6tables -t nat -I POSTROUTING 1 -s fd42:42:42:42::/112 -o $NIC -j MASQUERADE
 ip6tables -I INPUT 1 -i tun0 -j ACCEPT
 ip6tables -I FORWARD 1 -i $NIC -o tun0 -j ACCEPT
 ip6tables -I FORWARD 1 -i tun0 -o $NIC -j ACCEPT
-ip6tables -I INPUT 1 -i $NIC -p $PROTOCOL --dport $PORT -j ACCEPT" >>/etc/iptables/add-openvpn-rules.sh
+ip6tables -I INPUT 1 -i $NIC -p $PROTOCOL --dport $PORT -j ACCEPT
+iptables -N OPENVPN
+iptables -I INPUT 1 -j OPENVPN
+/etc/iptables/rules.d/*.sh start" >>/etc/iptables/add-openvpn-rules.sh
 	fi
 
 	# Script to remove rules
@@ -983,15 +990,36 @@ iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -o $NIC -j MASQUERADE
 iptables -D INPUT -i tun0 -j ACCEPT
 iptables -D FORWARD -i $NIC -o tun0 -j ACCEPT
 iptables -D FORWARD -i tun0 -o $NIC -j ACCEPT
-iptables -D INPUT -i $NIC -p $PROTOCOL --dport $PORT -j ACCEPT" >/etc/iptables/rm-openvpn-rules.sh
+iptables -D INPUT -i $NIC -p $PROTOCOL --dport $PORT -j ACCEPT
+for GROUPNAME in $(cat /etc/openvpn/easy-rsa/pki/group.txt | awk '{print $1}')
+do
+	iptables -F ${GROUPNAME}
+	iptables -X ${GROUPNAME}
+done
+iptables -F OPENVPN
+iptables -X OPENVPN
+iptables -D INPUT -j OPENVPN" >/etc/iptables/rm-openvpn-rules.sh
 
 	if [[ $IPV6_SUPPORT == 'y' ]]; then
 		echo "ip6tables -t nat -D POSTROUTING -s fd42:42:42:42::/112 -o $NIC -j MASQUERADE
 ip6tables -D INPUT -i tun0 -j ACCEPT
 ip6tables -D FORWARD -i $NIC -o tun0 -j ACCEPT
 ip6tables -D FORWARD -i tun0 -o $NIC -j ACCEPT
-ip6tables -D INPUT -i $NIC -p $PROTOCOL --dport $PORT -j ACCEPT" >>/etc/iptables/rm-openvpn-rules.sh
+ip6tables -D INPUT -i $NIC -p $PROTOCOL --dport $PORT -j ACCEPT
+for GROUPNAME in $(cat /etc/openvpn/easy-rsa/pki/group.txt | awk '{print $1}')
+do
+	iptables -F ${GROUPNAME}
+	iptables -X ${GROUPNAME}
+done
+iptables -F OPENVPN
+iptables -X OPENVPN
+iptables -D INPUT -j OPENVPN" >>/etc/iptables/rm-openvpn-rules.sh
 	fi
+
+	# 创建用户组表和ip映射表
+	touch /etc/openvpn/easy-rsa/pki/group.txt
+	touch /etc/openvpn/easy-rsa/pki/ip_map.txt
+
 
 	chmod +x /etc/iptables/add-openvpn-rules.sh
 	chmod +x /etc/iptables/rm-openvpn-rules.sh
@@ -1128,7 +1156,7 @@ function newClient() {
 			echo "<tls-crypt>"
 			cat /etc/openvpn/tls-crypt.key
 			echo "</tls-crypt>"
-			;;
+			;; 
 		2)
 			echo "key-direction 1"
 			echo "<tls-auth>"
@@ -1272,8 +1300,7 @@ function removeOpenVPN() {
 		fi
 
 		# Cleanup
-		find /home/ -maxdepth 2 -name "*.ovpn" -delete
-		find /root/ -maxdepth 1 -name "*.ovpn" -delete
+		find /homeDir/ -maxdepth 2 -name "*.ovpn" -delete
 		rm -rf /etc/openvpn
 		rm -rf /usr/share/doc/openvpn*
 		rm -f /etc/sysctl.d/99-openvpn.conf
@@ -1291,6 +1318,74 @@ function removeOpenVPN() {
 	fi
 }
 
+# 创建用户组
+function newGroup(){
+	echo "What's your group name?"
+	until [[ $GROUPNAME =~ ^[a-zA-Z0-9_-]+$ ]]; do
+		read -rp "Group name: " -e GROUPNAME
+	done
+
+	echo "OPENVPN_${GROUPNAME}" | tee -a /etc/openvpn/easy-rsa/pki/group.txt
+	iptables -N OPENVPN_${GROUPNAME}
+	sed -i '$a\iptables\ -N\ OPENVPN_${GROUPNAME}' /etc/iptables/add-openvpn-rules.sh
+	sed -i '$a\iptables\ -F\ OPENVPN_${GROUPNAME}' /etc/iptables/rm-openvpn-rules.sh
+	sed -i '$a\iptables\ -X\ OPENVPN_${GROUPNAME}' /etc/iptables/rm- openvpn-rules.sh
+}
+
+# 删除用户组
+function deleteGroup(){
+	echo "Which group name will you deleted?"
+	until [[ $GROUPNAME =~ ^[a-zA-Z0-9_-]+$ ]]; do
+		read -rp "Group name: " -e GROUPNAME
+	done
+
+	sed -i '/.*OPENVPN_${GROUPNAME}.*/d' /etc/openvpn/easy-rsa/pki/group.txt
+	iptables -F OPENVPN_${GROUPNAME}
+	iptables -X OPENVPN_${GROUPNAME}
+	sed -i '/iptables\ -N\ OPENVPN_${GROUPNAME}/d' /etc/iptables/add-openvpn-rules.sh
+	sed -i '/iptables\ -F\ OPENVPN_${GROUPNAME}/d' /etc/iptables/rm-openvpn-rules.sh
+	sed -i '/iptables\ -X\ OPENVPN_${GROUPNAME}/d' /etc/iptables/rm- openvpn-rules.sh
+}
+
+function addUserToGroup(){
+
+}
+
+function removeUserFromGroup(){
+
+}
+
+function showAll(){
+	
+}
+
+#打开用户组控制菜单
+function groupMenu(){
+	echo "What do you want to do?"
+	echo "   1) Add user to group"
+	echo "   2) remove user from group"
+	echo "   3) show the all list"
+	echo "   4) Exit"
+	until [[ $MENU_OPTION =~ ^[1-4]$ ]]; do
+		read -rp "Select an option [1-4]: " MENU_OPTION
+	done
+
+	case $MENU_OPTION in
+	1)
+		addUserToGroup
+		;;
+	2)
+		removeUserFromGroup
+		;;
+	3)
+		showAll
+	  ;;
+	4)
+		exit 0
+		;;
+	esac
+}
+
 function manageMenu() {
 	echo "Welcome to OpenVPN-install!"
 	echo "The git repository is available at: https://github.com/angristan/openvpn-install"
@@ -1300,10 +1395,13 @@ function manageMenu() {
 	echo "What do you want to do?"
 	echo "   1) Add a new user"
 	echo "   2) Revoke existing user"
-	echo "   3) Remove OpenVPN"
-	echo "   4) Exit"
-	until [[ $MENU_OPTION =~ ^[1-4]$ ]]; do
-		read -rp "Select an option [1-4]: " MENU_OPTION
+	echo "   3) Add a new group"
+	echo "   4) Delete existing group"
+	echo "   5) Open the group menu"
+	echo "   6) Remove OpenVPN"
+	echo "   7) Exit"
+	until [[ $MENU_OPTION =~ ^[1-7]$ ]]; do
+		read -rp "Select an option [1-7]: " MENU_OPTION
 	done
 
 	case $MENU_OPTION in
@@ -1314,9 +1412,18 @@ function manageMenu() {
 		revokeClient
 		;;
 	3)
+		newGroup
+	  ;;
+	4)
+		deleteGroup
+		;;
+	5)
+		groupMenu
+		;;
+	6)
 		removeOpenVPN
 		;;
-	4)
+	7)
 		exit 0
 		;;
 	esac
