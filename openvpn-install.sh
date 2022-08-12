@@ -1299,8 +1299,18 @@ function removeOpenVPN() {
 			dnf remove -y openvpn
 		fi
 
+		# 删除 iptables 规则
+		for g in $(tail -n +1 /etc/openvpn/easy-rsa/pki/group.txt | awk -F "\"" '{print $2}')
+		do
+			iptables -F OPENVPN_${g}
+			iptables -X OPENVPN_${g}
+		done
+		iptables -D INPUT -j OPENVPN
+		iptables -F OPENVPN
+		iptables -X OPENVPN
+
 		# Cleanup
-		find /homeDir/ -maxdepth 2 -name "*.ovpn" -delete
+		find ${homeDir}/ -maxdepth 2 -name "*.ovpn" -delete
 		rm -rf /etc/openvpn
 		rm -rf /usr/share/doc/openvpn*
 		rm -f /etc/sysctl.d/99-openvpn.conf
@@ -1325,41 +1335,96 @@ function newGroup(){
 		read -rp "Group name: " -e GROUPNAME
 	done
 
-	echo "OPENVPN_${GROUPNAME}" | tee -a /etc/openvpn/easy-rsa/pki/group.txt
+	echo "\"${GROUPNAME}\"" | tee -a /etc/openvpn/easy-rsa/pki/group.txt
 	iptables -N OPENVPN_${GROUPNAME}
-	sed -i '$a\iptables\ -N\ OPENVPN_${GROUPNAME}' /etc/iptables/add-openvpn-rules.sh
-	sed -i '$a\iptables\ -F\ OPENVPN_${GROUPNAME}' /etc/iptables/rm-openvpn-rules.sh
-	sed -i '$a\iptables\ -X\ OPENVPN_${GROUPNAME}' /etc/iptables/rm- openvpn-rules.sh
+	sed -i "\$a\iptables\ -N\ OPENVPN_${GROUPNAME}" /etc/iptables/add-openvpn-rules.sh
+	sed -i "\$a\iptables\ -F\ OPENVPN_${GROUPNAME}" /etc/iptables/rm-openvpn-rules.sh
+	sed -i "\$a\iptables\ -X\ OPENVPN_${GROUPNAME}" /etc/iptables/rm-openvpn-rules.sh
 }
 
 # 删除用户组
 function deleteGroup(){
+	NUMBEROFGROUPS=$(tail -n +1 /etc/openvpn/easy-rsa/pki/group.txt | wc -l)
+	if [[ $NUMBEROFGROUPS == '0' ]]; then
+		echo ""
+		echo "You have no existing groups!"
+		exit 1
+	fi
+	echo ""
 	echo "Which group name will you deleted?"
-	until [[ $GROUPNAME =~ ^[a-zA-Z0-9_-]+$ ]]; do
-		read -rp "Group name: " -e GROUPNAME
+	tail -n +1 /etc/openvpn/easy-rsa/pki/group.txt | awk -F "\"" '{print $2}' | nl -s ') '
+	until [[ $GROUPNUMBER -ge 1 && $GROUPNUMBER -le $NUMBEROFGROUPS ]]; do
+		if [[ $GROUPNUMBER == '1' ]]; then
+			read -rp "Select one client [1]: " GROUPNUMBER
+		else
+			read -rp "Select one client [1-$NUMBEROFGROUPS]: " GROUPNUMBER
+		fi
+	done
+	GROUP=$(tail -n +1 /etc/openvpn/easy-rsa/pki/group.txt | awk -F "\"" '{print $2}' | sed -n "$GROUPNUMBER"p)
+
+	sed -i "/\"${GROUP}\"/d" /etc/openvpn/easy-rsa/pki/group.txt
+	iptables -F OPENVPN_${GROUP}
+	iptables -X OPENVPN_${GROUP}
+	sed -i "/iptables\ -N\ OPENVPN_${GROUP}/d" /etc/iptables/add-openvpn-rules.sh
+	sed -i "/iptables\ -F\ OPENVPN_${GROUP}/d" /etc/iptables/rm-openvpn-rules.sh
+	sed -i "/iptables\ -X\ OPENVPN_${GROUP}/d" /etc/iptables/rm-openvpn-rules.sh
+}
+
+# 添加用户到组
+function addUserToGroup(){
+	NUMBEROFCLIENTS=$(tail -n +2 /etc/openvpn/easy-rsa/pki/index.txt | grep -c "^V")
+	if [[ $NUMBEROFCLIENTS == '0' ]]; then
+		echo ""
+		echo "You have no existing clients!"
+		exit 1
+	fi
+
+	echo ""
+	echo "Which user will you choose?"
+	tail -n +2 /etc/openvpn/easy-rsa/pki/index.txt | grep "^V" | cut -d '=' -f 2 | nl -s ') '
+	until [[ $CLIENTNUMBER -ge 1 && $CLIENTNUMBER -le $NUMBEROFCLIENTS ]]; do
+		if [[ $CLIENTNUMBER == '1' ]]; then
+			read -rp "Select one client [1]: " CLIENTNUMBER
+		else
+			read -rp "Select one client [1-$NUMBEROFCLIENTS]: " CLIENTNUMBER
+		fi
 	done
 
-	sed -i '/.*OPENVPN_${GROUPNAME}.*/d' /etc/openvpn/easy-rsa/pki/group.txt
-	iptables -F OPENVPN_${GROUPNAME}
-	iptables -X OPENVPN_${GROUPNAME}
-	sed -i '/iptables\ -N\ OPENVPN_${GROUPNAME}/d' /etc/iptables/add-openvpn-rules.sh
-	sed -i '/iptables\ -F\ OPENVPN_${GROUPNAME}/d' /etc/iptables/rm-openvpn-rules.sh
-	sed -i '/iptables\ -X\ OPENVPN_${GROUPNAME}/d' /etc/iptables/rm- openvpn-rules.sh
-}
+	CLIENT=$(tail -n +2 /etc/openvpn/easy-rsa/pki/index.txt | grep "^V" | cut -d '=' -f 2 | sed -n "$CLIENTNUMBER"p)
 
-function addUserToGroup(){
+	NUMBEROFGROUPS=$(tail -n +2 /etc/openvpn/easy-rsa/pki/group.txt | grep -c "^V")
+	if [[ $NUMBEROFGROUPS == '0' ]]; then
+		echo ""
+		echo "You have no existing groups!"
+		exit 1
+	fi
 
-}
+	echo ""
+	echo "Which group will you choose?"
+	tail -n +2 /etc/openvpn/easy-rsa/pki/group.txt | cut -d '=' -f 2 | nl -s ') '
+	until [[ $GROUPNUMBER -ge 1 && $GROUPNUMBER -le $NUMBEROFGROUPS ]]; do
+		if [[ $GROUPNUMBER == '1' ]]; then
+			read -rp "Select one client [1]: " GROUPNUMBER
+		else
+			read -rp "Select one client [1-$NUMBEROFGROUPS]: " GROUPNUMBER
+		fi
+	done
 
-function removeUserFromGroup(){
-
-}
-
-function showAll(){
+	GROUP=$(tail -n +2 /etc/openvpn/easy-rsa/pki/group.txt | grep "^V" | cut -d '=' -f 2 | sed -n "$GROUPNUMBER"p)
 	
 }
 
-#打开用户组控制菜单
+# 从组中删除用户
+function removeUserFromGroup(){
+	exit 0
+}
+
+# 显示所有用户和组的列表
+function showAll(){
+	exit 0
+}
+
+# 打开用户组控制菜单
 function groupMenu(){
 	echo "What do you want to do?"
 	echo "   1) Add user to group"
@@ -1429,8 +1494,7 @@ function manageMenu() {
 	esac
 }
 
-# Check for root, TUN, OS...
-initialCheck
+# Check for root, TUN, OS...initialCheck
 
 # Check if OpenVPN is already installed
 if [[ -e /etc/openvpn/server.conf && $AUTO_INSTALL != "y" ]]; then
