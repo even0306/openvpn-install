@@ -1495,6 +1495,7 @@ function manageMenu() {
 }
 
 # Check for root, TUN, OS...initialCheck
+initialCheck
 
 # Check if OpenVPN is already installed
 if [[ -e /etc/openvpn/server.conf && $AUTO_INSTALL != "y" ]]; then
