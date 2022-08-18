@@ -971,6 +971,7 @@ iptables -I FORWARD 1 -i tun0 -o $NIC -j ACCEPT
 iptables -I INPUT 1 -i $NIC -p $PROTOCOL --dport $PORT -j ACCEPT
 iptables -N OPENVPN
 iptables -I INPUT 1 -j OPENVPN
+iptables -I OPENVPN -d 10.8.0.0/16 -j DROP
 /etc/iptables/rules.d/*.sh start" >/etc/iptables/add-openvpn-rules.sh
 
 	if [[ $IPV6_SUPPORT == 'y' ]]; then
@@ -981,6 +982,7 @@ ip6tables -I FORWARD 1 -i tun0 -o $NIC -j ACCEPT
 ip6tables -I INPUT 1 -i $NIC -p $PROTOCOL --dport $PORT -j ACCEPT
 iptables -N OPENVPN
 iptables -I INPUT 1 -j OPENVPN
+iptables -I OPENVPN -d 10.8.0.0/16 -j DROP
 /etc/iptables/rules.d/*.sh start" >>/etc/iptables/add-openvpn-rules.sh
 	fi
 
@@ -1328,6 +1330,42 @@ function removeOpenVPN() {
 	fi
 }
 
+# 获取可用的最小数值
+function getMinNumber(){
+	if [ $2 == "1" ]; then
+		ALL_NUMBER=$(cat $1 | awk '{print $2}')
+	elif [ $2 == "2" ]; then
+		ALL_NUMBER=$(cat $1 | grep $3 | awk '{print $2}')
+	fi
+	declare -i MAX_NUMBER=1
+	declare -i MIN_NUMBER=1
+	declare -i n
+	declare -i i
+	for n in ${ALL_NUMBER}
+	do
+		if [ ${n} -gt ${MAX_NUMBER} ]; then
+			MAX_NUMBER=${n}
+		fi
+	done
+
+	for ((i=1;;i+=$2))
+	do
+		for n in ${ALL_NUMBER}
+		do
+			flag=0
+			if [ ${i} -eq ${n} ]; then
+				flag=1
+				break
+			fi
+		done
+		if [ ${flag} -eq 1 ]; then
+			continue
+		fi
+		MIN_NUMBER=${i}
+		return ${MIN_NUMBER}
+	done
+}
+
 # 创建用户组
 function newGroup(){
 	echo "What's your group name?"
@@ -1335,8 +1373,12 @@ function newGroup(){
 		read -rp "Group name: " -e GROUPNAME
 	done
 
-	echo "\"${GROUPNAME}\"" | tee -a /etc/openvpn/easy-rsa/pki/group.txt
+	getMinNumber /etc/openvpn/easy-rsa/pki/group.txt 1
+	groupIP=$?
+	echo "\"${GROUPNAME}\"     ${groupIP}" | tee -a /etc/openvpn/easy-rsa/pki/group.txt
 	iptables -N OPENVPN_${GROUPNAME}
+	iptables -I OPENVPN -d 10.8.${groupIP}.0/24 -j OPENVPN_${GROUPNAME}
+	sed -i "\$a\iptables\ -I\ OPENVPN\ -d\ 10.8.${groupIP}.0/24\ -j\ OPENVPN_${GROUPNAME}" /etc/iptables/add-openvpn-rules.sh
 	sed -i "\$a\iptables\ -N\ OPENVPN_${GROUPNAME}" /etc/iptables/add-openvpn-rules.sh
 	sed -i "\$a\iptables\ -F\ OPENVPN_${GROUPNAME}" /etc/iptables/rm-openvpn-rules.sh
 	sed -i "\$a\iptables\ -X\ OPENVPN_${GROUPNAME}" /etc/iptables/rm-openvpn-rules.sh
@@ -1392,7 +1434,7 @@ function addUserToGroup(){
 
 	CLIENT=$(tail -n +2 /etc/openvpn/easy-rsa/pki/index.txt | grep "^V" | cut -d '=' -f 2 | sed -n "$CLIENTNUMBER"p)
 
-	NUMBEROFGROUPS=$(tail -n +2 /etc/openvpn/easy-rsa/pki/group.txt | grep -c "^V")
+	NUMBEROFGROUPS=$(tail -n +1 /etc/openvpn/easy-rsa/pki/group.txt | wc -l)
 	if [[ $NUMBEROFGROUPS == '0' ]]; then
 		echo ""
 		echo "You have no existing groups!"
@@ -1401,17 +1443,29 @@ function addUserToGroup(){
 
 	echo ""
 	echo "Which group will you choose?"
-	tail -n +2 /etc/openvpn/easy-rsa/pki/group.txt | cut -d '=' -f 2 | nl -s ') '
+	tail -n +1 /etc/openvpn/easy-rsa/pki/group.txt | awk -F '"' '{print $2}' | nl -s ') '
 	until [[ $GROUPNUMBER -ge 1 && $GROUPNUMBER -le $NUMBEROFGROUPS ]]; do
-		if [[ $GROUPNUMBER == '1' ]]; then
+		if [[ $NUMBEROFGROUPS == '1' ]]; then
 			read -rp "Select one client [1]: " GROUPNUMBER
 		else
 			read -rp "Select one client [1-$NUMBEROFGROUPS]: " GROUPNUMBER
 		fi
 	done
 
-	GROUP=$(tail -n +2 /etc/openvpn/easy-rsa/pki/group.txt | grep "^V" | cut -d '=' -f 2 | sed -n "$GROUPNUMBER"p)
+	GROUP=$(tail -n +1 /etc/openvpn/easy-rsa/pki/group.txt | awk -F '"' '{print $2}' | sed -n "$GROUPNUMBER"p)
+	GROUPIPNUM=$(cat /etc/openvpn/easy-rsa/pki/group.txt | grep ${GROUP} | awk '{print $2}')
 	
+	getMinNumber /etc/openvpn/easy-rsa/pki/ip_map.txt 2 ${GROUP}
+	mapIPNUM=$?
+
+	cat /etc/openvpn/easy-rsa/pki/ip_map.txt | grep ${CLIENT}
+	if [ $? == 0 ]; then
+		echo "The client has been added group!"
+		exit 0
+	fi
+
+	echo "\"${CLIENT}\"     ${mapIPNUM}     ${GROUP}" >> /etc/openvpn/easy-rsa/pki/ip_map.txt
+	echo "ifconfig-push 10.8.${GROUPIPNUM}.${mapIPNUM} 10.8.${GROUPIPNUM}.$((${mapIPNUM}+1))" >> /etc/openvpn/ccd/${CLIENT}
 }
 
 # 从组中删除用户
@@ -1494,12 +1548,16 @@ function manageMenu() {
 	esac
 }
 
-# Check for root, TUN, OS...initialCheck
-initialCheck
+function main(){
+	# Check for root, TUN, OS...initialCheck
+	initialCheck
 
-# Check if OpenVPN is already installed
-if [[ -e /etc/openvpn/server.conf && $AUTO_INSTALL != "y" ]]; then
-	manageMenu
-else
-	installOpenVPN
-fi
+	# Check if OpenVPN is already installed
+	if [[ -e /etc/openvpn/server.conf && $AUTO_INSTALL != "y" ]]; then
+		manageMenu
+	else
+		installOpenVPN
+	fi
+}
+
+main
